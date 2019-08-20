@@ -1,3 +1,6 @@
+# Command-line specific
+nohup.out
+
 # History files
 .Rhistory
 .Rapp.history
