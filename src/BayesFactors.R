@@ -2,6 +2,7 @@
 library(lme4)
 library(emmeans)
 library(brms)
+library(BayesFactor)
 library(tidyverse)
 library(scales)
 library(future)
@@ -39,8 +40,9 @@ H_naught.test <- function(N){
       return()
   }
   
-  # Define Bayesian analysis function, returning hyp. test bf
-  bayesian.analysis <- function(df.list){
+  # Define Bayesian analysis function, returning hyp. test bf, for different packages
+  ## brms::hypothesis
+  bayesian.analysis.brms <- function(df.list){
     p <- c(set_prior("normal(0,.5)", class = "Intercept"),
            set_prior("normal(0,.5)", class = "b"))
     future_lapply(seq_along(df.list),
@@ -66,6 +68,21 @@ H_naught.test <- function(N){
       bind_rows() %>%
       return()
   }
+  ## BayesFactor::ttestBF
+  bayesian.analysis.BF <- function(df.list){
+    future_lapply(seq_along(df.list),
+                  function(i){
+                    df.list[[i]] %>%
+                      group_by(ContrastType, Condition) %>%
+                      summarise(Evid.Ratio = ttestBF(x = ChanceArcsin) %>%
+                                  attr("bayesFactor") %>%
+                                  {exp(.$bf)}) %>%
+                      mutate(Sim = i) %>%
+                      return()
+                  }) %>%
+      bind_rows() %>%
+      return()
+  }
   
   # Get evidence summary from simulations
   t <- proc.time()
@@ -73,14 +90,21 @@ H_naught.test <- function(N){
   stb.time <- proc.time() - t
   print("STB analysis over")
   t <- proc.time()
-  new_old.sims.bayesian.evid <- bayesian.analysis(new_old.sims) %>%
+  new_old.sims.bayesian.evid.brms <- bayesian.analysis.brms(new_old.sims) %>%
     mutate(Condition = factor(ifelse(grepl("NoLabel", Hypothesis), "No Label", "Label")),
-           ContrastType = factor(ifelse(grepl("Tail", Hypothesis), "Tail", "Head")))
-  bayesian.time <- proc.time() - t
+           ContrastType = factor(ifelse(grepl("Tail", Hypothesis), "Tail", "Head")),
+           Implementation = "brms::hypothesis")
+  bayesian.time.brms <- proc.time() - t
+  t <- proc.time()
+  new_old.sims.bayesian.evid.BF <- bayesian.analysis.BF(new_old.sims) %>%
+    mutate(Implementation = "BayesFactor::ttestBF")
+  bayesian.time.BF <- proc.time() - t
   
-  return(list(BayesianEvidence = new_old.sims.bayesian.evid,
+  return(list(BayesianEvidence_brms = new_old.sims.bayesian.evid.brms,
+              BayesianEvidence_BF = new_old.sims.bayesian.evid.BF,
               SampleTheoryEvidence = new_old.sims.stb.evid,
-              BayesianTime = bayesian.time,
+              BayesianTime_brms = bayesian.time.brms,
+              BayesianTime_BF = bayesian.time.BF,
               SampleTheoryTime = stb.time))
 }
 
@@ -94,14 +118,20 @@ if(run_sims){
 }
 
 # Get quantiles for STB and Bayesian stats
-bayesian.95 <- quantile(new_old.sims.results.48$BayesianEvidence$Evid.Ratio, .95)
+bayesian.brms.95 <- quantile(new_old.sims.results.48$BayesianEvidence_brms$Evid.Ratio, .95)
+bayesian.BF.95 <- quantile(new_old.sims.results.48$BayesianEvidence_BF$Evid.Ratio, .95)
 stb.95 <- quantile(new_old.sims.results.48$SampleTheoryEvidence$p.value, .05)
-bayesian.above3 <- sum(new_old.sims.results.48$BayesianEvidence$Evid.Ratio > 3) / 400
+bayesian.brms.above3 <- sum(new_old.sims.results.48$BayesianEvidence_brms$Evid.Ratio > 3) / 400
+bayesian.BF.above3 <- sum(new_old.sims.results.48$BayesianEvidence_BF$Evid.Ratio > 3) / 400
 stb.bellow_dot05 <- sum(new_old.sims.results.48$SampleTheoryEvidence$p.value<.05) / 400
 
 # Combine data for plot and analysis
-bayesian.evidence <- new_old.sims.results.48$BayesianEvidence %>%
-  select(c(Sim, Evid.Ratio, Condition, ContrastType, Hypothesis)) %>%
+## STB evidence
+stb.evidence <- new_old.sims.results.48$SampleTheoryEvidence %>%
+  select(c(Sim, p.value, Condition, ContrastType))
+## brms evidence with STB p-values
+bayesian.evidence.brms <- new_old.sims.results.48$BayesianEvidence_brms %>%
+  select(c(Sim, Evid.Ratio, Condition, ContrastType, Implementation, Hypothesis)) %>%
   mutate(Hypothesis = case_when(grepl("ContrastTypeTail:ConditionNoLabel",
                                       Hypothesis) ~ "(Interaction)",
                                 grepl("ContrastTypeTail", Hypothesis) ~ "ContrastType",
@@ -110,10 +140,15 @@ bayesian.evidence <- new_old.sims.results.48$BayesianEvidence %>%
          Hypothesis = parse_factor(Hypothesis, levels = c("(Intercept)",
                                                           "ContrastType",
                                                           "Condition",
-                                                          "(Interaction)")))
-stb.evidence <- new_old.sims.results.48$SampleTheoryEvidence %>%
-  select(c(Sim, p.value, Condition, ContrastType))
-global.evidence <- full_join(bayesian.evidence, stb.evidence)
+                                                          "(Interaction)"))) %>%
+  full_join(stb.evidence)
+## BayesFactor evidence with STB p-values
+bayesian.evidence.BF <- new_old.sims.results.48$BayesianEvidence_BF %>%
+  select(c(Sim, Evid.Ratio, Condition, ContrastType, Implementation)) %>%
+  full_join(stb.evidence)
+## Global dataset for multi-facet plot
+global.evidence <- bind_rows(bayesian.evidence.brms,
+                             bayesian.evidence.BF)
 
 # Plot b-values over p-values
 generate_plots <- F
@@ -124,6 +159,7 @@ if(generate_plots){
                colour = Hypothesis)) +
     scale_y_continuous(trans = log10_trans()) +
     ylab("Bayes Factor") + xlab("p-value") + theme_bw() +
+    facet_wrap(facets = vars(Implementation), scales = "free_y") +
     theme(legend.position = "top",
           legend.title = element_blank()) +
     geom_point(alpha = .5) +
@@ -136,6 +172,6 @@ if(generate_plots){
                                    "Interaction"))
   ggsave("../results/b-value_p-value.pdf",
          plot = b_to_p.plot,
-         width = 5, height = 5,
+         width = 7, height = 3.5,
          dpi = 600)
 }
