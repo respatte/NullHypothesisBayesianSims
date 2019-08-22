@@ -92,12 +92,10 @@ H_naught.test <- function(N){
   t <- proc.time()
   new_old.sims.bayesian.evid.brms <- bayesian.analysis.brms(new_old.sims) %>%
     mutate(Condition = factor(ifelse(grepl("NoLabel", Hypothesis), "No Label", "Label")),
-           ContrastType = factor(ifelse(grepl("Tail", Hypothesis), "Tail", "Head")),
-           Implementation = "brms::hypothesis")
+           ContrastType = factor(ifelse(grepl("Tail", Hypothesis), "Tail", "Head")))
   bayesian.time.brms <- proc.time() - t
   t <- proc.time()
-  new_old.sims.bayesian.evid.BF <- bayesian.analysis.BF(new_old.sims) %>%
-    mutate(Implementation = "BayesFactor::ttestBF")
+  new_old.sims.bayesian.evid.BF <- bayesian.analysis.BF(new_old.sims)
   bayesian.time.BF <- proc.time() - t
   
   return(list(BayesianEvidence_brms = new_old.sims.bayesian.evid.brms,
@@ -129,9 +127,9 @@ stb.bellow_dot05 <- sum(new_old.sims.results.48$SampleTheoryEvidence$p.value<.05
 ## STB evidence
 stb.evidence <- new_old.sims.results.48$SampleTheoryEvidence %>%
   select(c(Sim, p.value, Condition, ContrastType))
-## brms evidence with STB p-values
+## brms evidence
 bayesian.evidence.brms <- new_old.sims.results.48$BayesianEvidence_brms %>%
-  select(c(Sim, Evid.Ratio, Condition, ContrastType, Implementation, Hypothesis)) %>%
+  select(c(Sim, Evid.Ratio, Condition, ContrastType, Hypothesis)) %>%
   mutate(Hypothesis = case_when(grepl("ContrastTypeTail:ConditionNoLabel",
                                       Hypothesis) ~ "(Interaction)",
                                 grepl("ContrastTypeTail", Hypothesis) ~ "ContrastType",
@@ -141,14 +139,16 @@ bayesian.evidence.brms <- new_old.sims.results.48$BayesianEvidence_brms %>%
                                                           "ContrastType",
                                                           "Condition",
                                                           "(Interaction)"))) %>%
-  full_join(stb.evidence)
+  rename(`brms::hypothesis` = Evid.Ratio)
 ## BayesFactor evidence with STB p-values
 bayesian.evidence.BF <- new_old.sims.results.48$BayesianEvidence_BF %>%
-  select(c(Sim, Evid.Ratio, Condition, ContrastType, Implementation)) %>%
-  full_join(stb.evidence)
+  select(c(Sim, Evid.Ratio, Condition, ContrastType)) %>%
+  rename(`BayesFactor::ttestBF` = Evid.Ratio)
 ## Global dataset for multi-facet plot
-global.evidence <- bind_rows(bayesian.evidence.brms,
-                             bayesian.evidence.BF)
+global.evidence <- stb.evidence %>%
+  full_join(bayesian.evidence.brms) %>%
+  full_join(bayesian.evidence.BF) %>%
+  gather("Implementation", "Evid.Ratio", c("brms::hypothesis", "BayesFactor::ttestBF"))
 
 # Plot b-values over p-values
 generate_plots <- F
